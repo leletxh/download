@@ -4,12 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       url:
-        description: 'URL to a text file containing one file URL per line'
+        description: 'URL to a plain text file containing one file URL per line (must be UTF-8 or ASCII)'
         required: true
         type: string
 
 permissions:
-  contents: write  # 允许推送内容到仓库
+  contents: write
 
 jobs:
   download-and-push:
@@ -25,7 +25,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests
+          pip install requests chardet
 
       - name: Download file list
         run: |
@@ -38,40 +38,66 @@ jobs:
           import os
           import sys
           import requests
+          import chardet
           from concurrent.futures import ThreadPoolExecutor, as_completed
 
-          # 读取文件列表
-          with open('filelist.txt', 'r') as f:
-              urls = [line.strip() for line in f if line.strip()]
+          # 检测文件编码
+          with open('filelist.txt', 'rb') as raw_f:
+              raw_data = raw_f.read()
+              if len(raw_data) == 0:
+                  print("Error: Downloaded file list is empty.")
+                  sys.exit(1)
+              encoding = chardet.detect(raw_data)['encoding']
+              # 保守处理：若非 UTF-8/ASCII，尝试 fallback
+              if encoding is None or 'utf' not in encoding.lower():
+                  encoding = 'utf-8'
+
+          try:
+              text = raw_data.decode(encoding, errors='ignore')
+          except Exception as e:
+              print(f"Error decoding file list (detected encoding: {encoding}): {e}")
+              print("Please ensure the input URL points to a plain text file with one URL per line (UTF-8 preferred).")
+              sys.exit(1)
+
+          urls = [line.strip() for line in text.splitlines() if line.strip() and line.strip().startswith(('http://', 'https://'))]
 
           if not urls:
-              print("No URLs found in file list.")
-              sys.exit(0)
+              print("No valid HTTP/HTTPS URLs found in the file list.")
+              sys.exit(1)
+
+          print(f"Found {len(urls)} URLs to download.")
 
           def download_file(url):
               try:
                   print(f"Downloading: {url}")
-                  response = requests.get(url, stream=True)
+                  response = requests.get(url, stream=True, timeout=30)
                   response.raise_for_status()
 
-                  # 从 URL 提取文件名（安全处理）
-                  filename = os.path.basename(url.split('?')[0])
-                  if not filename:
-                      filename = f"file_{hash(url) & 0xFFFF}.bin"
+                  filename = os.path.basename(url.split('?')[0].split('/')[-1])
+                  if not filename or '.' not in filename:
+                      # 生成安全默认名
+                      filename = f"downloaded_file_{abs(hash(url)) % 10000:04d}"
+                  # 清理非法字符
                   safe_filename = "".join(c if c.isalnum() or c in "._-" else "_" for c in filename)
+                  # 防止覆盖
+                  counter = 1
+                  orig = safe_filename
+                  while os.path.exists(safe_filename):
+                      safe_filename = f"{orig}_{counter}"
+                      counter += 1
 
                   with open(safe_filename, 'wb') as out_file:
                       for chunk in response.iter_content(chunk_size=8192):
-                          out_file.write(chunk)
+                          if chunk:
+                              out_file.write(chunk)
                   print(f"Saved as: {safe_filename}")
                   return safe_filename
               except Exception as e:
                   print(f"Failed to download {url}: {e}")
                   return None
 
-          # 并行下载
           downloaded_files = []
-          with ThreadPoolExecutor(max_workers=10) as executor:
+          with ThreadPoolExecutor(max_workers=5) as executor:
               futures = {executor.submit(download_file, url): url for url in urls}
               for future in as_completed(futures):
                   result = future.result()
@@ -80,21 +106,16 @@ jobs:
 
           if not downloaded_files:
               print("No files were successfully downloaded.")
-              sys.exit(0)
+              sys.exit(1)
 
-          # 配置 Git
+          # Git config
           os.system('git config --global user.name "github-actions[bot]"')
           os.system('git config --global user.email "github-actions[bot]@users.noreply.github.com"')
 
-          # 添加、提交、推送
+          # Add, commit, push
           for f in downloaded_files:
               os.system(f'git add "{f}"')
           os.system('git commit -m "Add downloaded files via GitHub Action"')
           os.system('git push')
 
         shell: python
-
-      - name: Summary
-        if: always()
-        run: |
-          echo "Workflow completed."
