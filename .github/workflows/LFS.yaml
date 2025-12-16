@@ -11,10 +11,10 @@ jobs:
       - name: Checkout repository with LFS
         uses: actions/checkout@v4
         with:
-          lfs: true  # 自动处理 Git LFS 文件
+          lfs: true
 
-      # 如果你的后续步骤依赖 LFS（例如测试或构建），可继续添加
-      - name: Verify LFS
+      - name: Install LFS
         run: |
+          git lfs install
           git lfs env
           git lfs ls-files
