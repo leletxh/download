@@ -9,7 +9,7 @@ on:
         type: string
 
 permissions:
-  contents: write  # 允许推送内容到仓库
+  contents: write
 
 jobs:
   push-file:
@@ -45,6 +45,7 @@ jobs:
 
       - name: Commit and push file
         run: |
+          git lfs install
           FILENAME=$(basename "${{ github.event.inputs.url }}" | cut -d'?' -f1 | cut -d'#' -f1)
           if [[ -z "$FILENAME" || "$FILENAME" == "/" ]]; then
             FILENAME="downloaded_file"
